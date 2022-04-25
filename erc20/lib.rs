@@ -24,6 +24,16 @@ mod erc20 {
         InsufficientBalance,
     }
 
+    /// Transfer Event
+    #[ink(event)]
+    pub struct Transfer {
+        #[ink(topic)]
+        from: Option<AccountId>,
+        #[ink(topic)]
+        to: Option<AccountId>,
+        value: Balance,
+    }
+
     pub type Result<T> = core::result::Result<T, Error>;
 
     impl Erc20 {
@@ -35,6 +45,11 @@ mod erc20 {
                 contract.total_supply = initial_supply;
                 let caller = contract.env().caller();
                 contract.balances.insert(&caller, &initial_supply);
+                contract.env().emit_event(Transfer {
+                    from: None,
+                    to: Some(caller),
+                    value: initial_supply,
+                });
             })
         }
 
@@ -77,6 +92,11 @@ mod erc20 {
             self.balances.insert(from, &(from_balance - value));
             let to_balance = self.balance_of_impl(to);
             self.balances.insert(to, &(to_balance + value));
+            self.env().emit_event(Transfer {
+                from: Some(*from),
+                to: Some(*to),
+                value,
+            });
             Ok(())
         }
 
@@ -123,6 +143,14 @@ mod erc20 {
 
             assert_eq!(contract.balance_of(alice), 75);
             assert_eq!(contract.balance_of(bob), 25);
+        }
+
+        #[ink::test]
+        fn transfer_works_2() {
+            let mut erc20 = Erc20::new(100);
+            assert_eq!(erc20.balance_of(AccountId::from([0x0; 32])), 0);
+            assert_eq!(erc20.transfer(AccountId::from([0x0; 32]), 10), Ok(()));
+            assert_eq!(erc20.balance_of(AccountId::from([0x0; 32])), 10);
         }
     }
 }
