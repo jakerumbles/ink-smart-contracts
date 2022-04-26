@@ -14,6 +14,8 @@ mod erc20 {
         total_supply: Balance,
         /// The balance of each user.
         balances: ink_storage::Mapping<AccountId, Balance>,
+        /// Authorized allowance for 3rd party smart contracts to spend user tokens
+        allowances: ink_storage::Mapping<(AccountId, AccountId), Balance>,
     }
 
     /// Specify ERC-20 error type
@@ -22,6 +24,8 @@ mod erc20 {
     pub enum Error {
         /// Return if the  balance cannot fulfill a request
         InsufficientBalance,
+        /// Transfer request exceeds the account allowance
+        InsufficientAllowance,
     }
 
     /// Transfer Event
@@ -31,6 +35,15 @@ mod erc20 {
         from: Option<AccountId>,
         #[ink(topic)]
         to: Option<AccountId>,
+        value: Balance,
+    }
+
+    #[ink(event)]
+    pub struct Approval {
+        #[ink(topic)]
+        owner: AccountId,
+        #[ink(topic)]
+        spender: AccountId,
         value: Balance,
     }
 
@@ -77,6 +90,27 @@ mod erc20 {
             self.transfer_from_to(&from, &to, value)
         }
 
+        /// Transfers tokens on the behalf of the `from` account to the `to` account
+        #[ink(message)]
+        pub fn transfer_from(
+            &mut self,
+            from: AccountId,
+            to: AccountId,
+            value: Balance,
+        ) -> Result<()> {
+            // This should be a smart contract and not a person 99% of the time I think
+            let caller = self.env().caller();
+            let allowance = self.allowance_impl(&from, &caller);
+            if allowance < value {
+                return Err(Error::InsufficientAllowance);
+            }
+
+            self.transfer_from_to(&from, &to, value)?;
+            self.allowances
+                .insert((&from, &caller), &(allowance - value));
+            Ok(())
+        }
+
         fn transfer_from_to(
             &mut self,
             from: &AccountId,
@@ -106,8 +140,31 @@ mod erc20 {
         }
 
         #[ink(message)]
+        /// Just experimenting...
         pub fn get_caller_address(&self) -> AccountId {
             self.env().caller()
+        }
+
+        #[ink(message)]
+        pub fn approve(&mut self, spender: AccountId, value: Balance) -> Result<()> {
+            let owner = self.env().caller();
+            self.allowances.insert((&owner, &spender), &value);
+            self.env().emit_event(Approval {
+                owner,
+                spender,
+                value,
+            });
+            Ok(())
+        }
+
+        #[ink(message)]
+        pub fn allowance(&self, owner: AccountId, spender: AccountId) -> Balance {
+            self.allowance_impl(&owner, &spender)
+        }
+
+        #[inline]
+        fn allowance_impl(&self, owner: &AccountId, spender: &AccountId) -> Balance {
+            self.allowances.get((owner, spender)).unwrap_or_default()
         }
     }
 
@@ -151,6 +208,40 @@ mod erc20 {
             assert_eq!(erc20.balance_of(AccountId::from([0x0; 32])), 0);
             assert_eq!(erc20.transfer(AccountId::from([0x0; 32]), 10), Ok(()));
             assert_eq!(erc20.balance_of(AccountId::from([0x0; 32])), 10);
+        }
+
+        #[ink::test]
+        fn transfer_from_works() {
+            let mut erc20 = Erc20::new(100);
+            assert_eq!(erc20.balance_of(AccountId::from([0x1; 32])), 100);
+            erc20.approve(AccountId::from([0x1; 32]), 20);
+            erc20.transfer_from(AccountId::from([0x1; 32]), AccountId::from([0x0; 32]), 10);
+            assert_eq!(erc20.balance_of(AccountId::from([0x0; 32])), 10);
+        }
+
+        #[ink::test]
+        fn allowances_works() {
+            let mut contract = Erc20::new(100);
+            assert_eq!(contract.balance_of(AccountId::from([0x1; 32])), 100);
+            contract.approve(AccountId::from([0x1; 32]), 200);
+            assert_eq!(
+                contract.allowance(AccountId::from([0x1; 32]), AccountId::from([0x1; 32])),
+                200
+            );
+
+            contract.transfer_from(AccountId::from([0x1; 32]), AccountId::from([0x0; 32]), 50);
+            assert_eq!(contract.balance_of(AccountId::from([0x0; 32])), 50);
+            assert_eq!(
+                contract.allowance(AccountId::from([0x1; 32]), AccountId::from([0x1; 32])),
+                150
+            );
+
+            contract.transfer_from(AccountId::from([0x1; 32]), AccountId::from([0x0; 32]), 100);
+            assert_eq!(contract.balance_of(AccountId::from([0x0; 32])), 50);
+            assert_eq!(
+                contract.allowance(AccountId::from([0x1; 32]), AccountId::from([0x1; 32])),
+                150
+            );
         }
     }
 }
